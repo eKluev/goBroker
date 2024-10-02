@@ -10,9 +10,9 @@ import (
 )
 
 type userHandler struct {
-	queue  *map[string]Deque
-	mutex  sync.Mutex
-	notify map[string]chan struct{}
+	queue    *map[string]Deque
+	mutex    sync.Mutex
+	waitList map[string][]chan struct{}
 }
 
 func (h *userHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,9 +37,11 @@ func (h *userHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mutex.Lock()
 		deque.PushFront(message)
 		(*h.queue)[queueName] = deque
-		if ch, ok := h.notify[queueName]; ok {
-			close(ch)
-			delete(h.notify, queueName)
+
+		if waiters, ok := h.waitList[queueName]; ok && len(waiters) > 0 {
+			firstWaiter := waiters[0]
+			h.waitList[queueName] = waiters[1:]
+			close(firstWaiter)
 		}
 		h.mutex.Unlock()
 	}
@@ -67,7 +69,7 @@ func (h *userHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if timeout > 0 {
 			ch := make(chan struct{})
 			h.mutex.Lock()
-			h.notify[queueName] = ch
+			h.waitList[queueName] = append(h.waitList[queueName], ch)
 			h.mutex.Unlock()
 
 			select {
@@ -84,6 +86,16 @@ func (h *userHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusNotFound)
 				}
 			case <-time.After(time.Duration(timeout) * time.Second):
+				h.mutex.Lock()
+				waiters := h.waitList[queueName]
+				for i := 0; i < len(waiters); i++ {
+					if waiters[i] == ch {
+						h.waitList[queueName] = append(waiters[:i], waiters[i+1:]...)
+						break
+					}
+				}
+				h.mutex.Unlock()
+
 				w.WriteHeader(http.StatusNotFound)
 			}
 
@@ -98,10 +110,10 @@ func main() {
 	flag.Parse()
 
 	queue := make(map[string]Deque)
-	notify := make(map[string]chan struct{})
+	waitList := make(map[string][]chan struct{})
 
 	mux := http.NewServeMux()
-	mux.Handle("/", &userHandler{queue: &queue, notify: notify})
+	mux.Handle("/", &userHandler{queue: &queue, waitList: waitList})
 	address := fmt.Sprintf(":%d", *port)
 	err := http.ListenAndServe(address, mux)
 	if err != nil {
