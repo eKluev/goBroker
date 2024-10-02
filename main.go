@@ -1,6 +1,8 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -92,11 +94,16 @@ func (h *userHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	port := flag.Int("port", 8080, "Port for HTTP server")
+	flag.Parse()
+
 	queue := make(map[string]Deque)
 	notify := make(map[string]chan struct{})
+
 	mux := http.NewServeMux()
 	mux.Handle("/", &userHandler{queue: &queue, notify: notify})
-	err := http.ListenAndServe(":8080", mux)
+	address := fmt.Sprintf(":%d", *port)
+	err := http.ListenAndServe(address, mux)
 	if err != nil {
 		return
 	}
